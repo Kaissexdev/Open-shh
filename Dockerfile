@@ -1,8 +1,14 @@
 FROM ubuntu:latest
 
-# Install OpenSSH server, sudo, and curl
-RUN apt-get update && apt-get install -y openssh-server sudo curl && \
-    mkdir /var/run/sshd
+# Fix for Exit Code 1: Stops apt-get from asking interactive questions during installation
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install OpenSSH server, sudo, and curl, then clean up cache to make image lighter
+RUN apt-get update && \
+    apt-get install -y openssh-server sudo curl tzdata && \
+    mkdir -p /var/run/sshd && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Configure SSH for tunneling
 RUN sed -i 's/#AllowTcpForwarding yes/AllowTcpForwarding yes/' /etc/ssh/sshd_config && \
@@ -25,3 +31,4 @@ CMD sh -c 'LISTEN_PORT=${PORT:-22}; \
         -d text="${MESSAGE}" \
         -d parse_mode="HTML"; \
     exec /usr/sbin/sshd -D -p ${LISTEN_PORT}'
+    
