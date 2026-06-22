@@ -4,7 +4,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Kolkata
 ENV PORT=5000
 
-ARG ROOT_PASSWORD="root"
+ARG ROOT_PASSWORD=""
 
 # Install tools, SSH, and a lightweight web server
 RUN apt-get update && \
@@ -22,6 +22,9 @@ RUN echo "root:${ROOT_PASSWORD}" | chpasswd \
     && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config \
     && sed -i 's/#Port 22/Port 22/' /etc/ssh/sshd_config
 
+# Create working directories first
+RUN mkdir -p /workspace /data /logs /var/www/html
+
 # Create a simple web server script on port 5000
 RUN echo '#!/usr/bin/env python3\n\
 import http.server\n\
@@ -31,13 +34,16 @@ import os\n\
 PORT = int(os.environ.get("PORT", 5000))\n\
 Handler = http.server.SimpleHTTPRequestHandler\n\
 \n\
+# Change to the web directory\n\
+os.chdir("/var/www/html")\n\
+\n\
 with socketserver.TCPServer(("0.0.0.0", PORT), Handler) as httpd:\n\
     print(f"Serving web interface at port {PORT}")\n\
     print(f"SSH server running on port 22")\n\
     print(f"Connect via: ssh root@open-shh.onrender.com -p 22")\n\
     httpd.serve_forever()' > /usr/local/bin/web-server.py && chmod +x /usr/local/bin/web-server.py
 
-# Create a simple HTML page for web interface
+# Create a simple HTML page for web interface (directory now exists)
 RUN echo '<!DOCTYPE html>\n\
 <html>\n\
 <head><title>VPS Server</title></head>\n\
@@ -55,13 +61,6 @@ RUN echo 'export PS1="root@VPS:\\w# "' >> /root/.bashrc && \
     echo 'alias ll="ls -alF"' >> /root/.bashrc && \
     echo 'alias la="ls -A"' >> /root/.bashrc && \
     echo 'alias l="ls -CF"' >> /root/.bashrc
-
-# Create working directories
-RUN mkdir -p /workspace /data /logs /var/www/html
-
-# Set the web server to serve the HTML directory
-RUN sed -i 's|Handler = http.server.SimpleHTTPRequestHandler|Handler = http.server.SimpleHTTPRequestHandler\n\
-    os.chdir("/var/www/html")|' /usr/local/bin/web-server.py
 
 EXPOSE 22 5000
 
