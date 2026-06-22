@@ -4,13 +4,13 @@
 
 set -e  # Exit on error
 
-# Dropbear configuration
-DROPBEAR_PORT=109
-FALLBACK_PORT=2200
+# Dropbear configuration - use ports >1024 to avoid permission issues
+DROPBEAR_PORT=2222
+FALLBACK_PORT=3333
 DROPBEAR_USER="tunneluser"
 DROPBEAR_HOST_KEY_DIR="/etc/dropbear"
 DROPBEAR_RSA_KEY="${DROPBEAR_HOST_KEY_DIR}/dropbear_rsa_host_key"
-LOG_FILE="/var/log/dropbear.log"
+LOG_FILE="/app/logs/dropbear.log"
 
 # Log function with timestamp
 log() {
@@ -20,8 +20,8 @@ log() {
 log "Starting Dropbear SSH server setup"
 
 # Create key directory and set permissions
-mkdir -p "${DROPBEAR_HOST_KEY_DIR}"
-chown ${DROPBEAR_USER}:${DROPBEAR_USER} "${DROPBEAR_HOST_KEY_DIR}"
+mkdir -p "${DROPBEAR_HOST_KEY_DIR}" "/app/logs"
+chown -R ${DROPBEAR_USER}:${DROPBEAR_USER} "${DROPBEAR_HOST_KEY_DIR}" "/app/logs"
 
 # Generate RSA host key if it doesn't exist
 if [ ! -f "${DROPBEAR_RSA_KEY}" ]; then
