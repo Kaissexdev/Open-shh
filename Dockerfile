@@ -4,7 +4,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Kolkata
 ENV PORT=5000
 
-ARG ROOT_PASSWORD=""
+# Set a default password, can be overridden via environment variable
+ENV ROOT_PASSWORD=root123
 
 # Install tools, SSH, and a lightweight web server
 RUN apt-get update && \
@@ -22,7 +23,7 @@ RUN echo "root:${ROOT_PASSWORD}" | chpasswd \
     && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config \
     && sed -i 's/#Port 22/Port 22/' /etc/ssh/sshd_config
 
-# Create working directories first
+# Create working directories
 RUN mkdir -p /workspace /data /logs /var/www/html
 
 # Create a simple web server script on port 5000
@@ -34,16 +35,16 @@ import os\n\
 PORT = int(os.environ.get("PORT", 5000))\n\
 Handler = http.server.SimpleHTTPRequestHandler\n\
 \n\
-# Change to the web directory\n\
 os.chdir("/var/www/html")\n\
 \n\
 with socketserver.TCPServer(("0.0.0.0", PORT), Handler) as httpd:\n\
     print(f"Serving web interface at port {PORT}")\n\
     print(f"SSH server running on port 22")\n\
     print(f"Connect via: ssh root@open-shh.onrender.com -p 22")\n\
+    print(f"Password: root123 (change after login)")\n\
     httpd.serve_forever()' > /usr/local/bin/web-server.py && chmod +x /usr/local/bin/web-server.py
 
-# Create a simple HTML page for web interface (directory now exists)
+# Create HTML page
 RUN echo '<!DOCTYPE html>\n\
 <html>\n\
 <head><title>VPS Server</title></head>\n\
@@ -51,6 +52,7 @@ RUN echo '<!DOCTYPE html>\n\
 <h1>Welcome to Your VPS Server</h1>\n\
 <p>SSH Server is running on port 22</p>\n\
 <p>Connect using: <code>ssh root@open-shh.onrender.com -p 22</code></p>\n\
+<p>Default Password: <strong>root123</strong></p>\n\
 <p>Status: <strong>Online</strong></p>\n\
 </body>\n\
 </html>' > /var/www/html/index.html
