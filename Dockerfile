@@ -13,9 +13,10 @@ RUN apk add --no-cache \
 RUN adduser -D -s /bin/false tunneluser && \
     echo "tunneluser:aroma26" | chpasswd
 
-# Create directory for Dropbear host keys
-RUN mkdir -p /etc/dropbear && \
-    chown tunneluser:tunneluser /etc/dropbear
+# Create directory for Dropbear host keys and logs with proper permissions
+RUN mkdir -p /etc/dropbear /app/logs && \
+    chown tunneluser:tunneluser /etc/dropbear /app/logs && \
+    chmod 755 /app/logs
 
 # Copy application files
 COPY proxy.py /app/proxy.py
@@ -25,7 +26,7 @@ COPY start.sh /app/start.sh
 RUN chmod +x /app/start.sh && \
     chmod 644 /app/proxy.py
 
-# Switch to non-root user for runtime (Dropbear will drop privileges anyway)
+# Switch to non-root user for runtime
 USER tunneluser
 WORKDIR /app
 
