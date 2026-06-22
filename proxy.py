@@ -16,6 +16,9 @@ import threading
 import select
 import re
 import logging
+import struct
+import hashlib
+import base64
 from datetime import datetime
 
 # Configure logging to stdout (captured by PaaS logs)
@@ -29,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Configuration
 LISTEN_PORT = int(os.environ.get('PORT', 8080))  # PaaS provides $PORT
 TARGET_HOST = '127.0.0.1'
-TARGET_PORT = 109  # Internal Dropbear port
+TARGET_PORT = int(os.environ.get('DROPBEAR_PORT', 109))  # Allow override
 BUFFER_SIZE = 8192
 CONNECTION_TIMEOUT = 60  # seconds
 
@@ -119,11 +122,6 @@ def handle_websocket_handshake(client_sock, data):
             )
         else:
             key = key_match.group(1).strip()
-            # Compute accept hash as per RFC 6455 (simplified - for real use use hashlib)
-            # But many clients accept any 24-char base64; we send a dummy valid one for speed
-            # To be fully compliant, uncomment the hashlib lines below
-            import hashlib
-            import base64
             magic = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
             accept = base64.b64encode(hashlib.sha1((key + magic).encode()).digest()).decode()
             response = (
@@ -147,45 +145,23 @@ def handle_http_connect(client_sock, data):
     try:
         # Extract SNI for logging before responding
         sni = extract_sni_from_http(data)
-        response = "HTTP/1.1 200 Connection Established\r\n\r\n"
+        response = "HTTP/1.1 200 Connection Established\r\nContent-Length: 0\r\n\r\n"
         client_sock.send(response.encode())
         return True, sni
     except Exception as e:
         logger.error(f"HTTP proxy response failed: {e}")
         return False, None
 
-def bridge_connections(src_sock, dst_sock, src_addr, dst_addr, protocol, sni=None):
-    """
-    Bidirectional data transfer between client and target (Dropbear).
-    Uses non-blocking select with timeout for graceful shutdown.
-    """
-    log_connection(src_addr, dst_addr, protocol, sni)
-    # Set sockets to non-blocking for select
-    src_sock.setblocking(False)
-    dst_sock.setblocking(False)
-    
-    # Track if we've sent initial data already (for client->server direction)
-    # We'll use a simple select loop
-    running = True
-    src_buf = b''
-    dst_buf = b''
-    
-    # We already read the initial data from client before detection
-    # That data is still in the socket buffer? Actually we read it in the main loop.
-    # We'll pass the initial data to this function for forwarding.
-    # The caller will handle sending the initial data.
-    
-    # Since we already consumed the initial data in the detect phase, we need to
-    # pass it here. We'll modify the bridge function signature to include initial_data.
-    # But for cleaner design, we'll handle initial data in the main loop.
-    # Actually, we've already read the first chunk - we need to forward it.
-    # So we'll re-implement the bridge inside the main loop to avoid double-buffering.
-    # Let's restructure: main loop reads first chunk, then passes everything including that chunk.
-    
-    # For now, we return a closure or re-architect.
-    # The clean approach: in the main thread, after detection and handshake,
-    # we spawn a new thread that handles the full bridging.
-    pass
+def check_dropbear_available():
+    """Return True if Dropbear is listening on TARGET_HOST:TARGET_PORT."""
+    try:
+        test = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test.settimeout(1.0)
+        test.connect((TARGET_HOST, TARGET_PORT))
+        test.close()
+        return True
+    except Exception:
+        return False
 
 def handle_client(client_sock, client_addr):
     """
@@ -217,6 +193,16 @@ def handle_client(client_sock, client_addr):
             # because it was the HTTP upgrade request; WebSocket frames follow.
             initial_data_to_forward = b''
             protocol = 'websocket'
+            
+            # Check Dropbear availability before bridging
+            if not check_dropbear_available():
+                logger.error(f"Dropbear unavailable for WebSocket connection from {client_addr}")
+                # Send WebSocket close frame (code 1013 = try again later)
+                close_frame = struct.pack('>BBH', 0x88, 0x02, 1013)
+                client_sock.send(close_frame)
+                client_sock.close()
+                return
+                
         elif conn_type == 'http_proxy':
             logger.info(f"HTTP proxy request from {client_addr}")
             handshake_ok, sni = handle_http_connect(client_sock, initial_data)
@@ -226,20 +212,41 @@ def handle_client(client_sock, client_addr):
             # After 200 response, the client will send the actual tunnel data
             initial_data_to_forward = b''
             protocol = 'http_proxy'
+            
+            # Check Dropbear availability
+            if not check_dropbear_available():
+                logger.error(f"Dropbear unavailable for HTTP proxy from {client_addr}")
+                client_sock.send(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                client_sock.close()
+                return
+                
         else:  # ssh_direct
             logger.info(f"Raw SSH connection from {client_addr}")
             # No handshake needed; forward the initial data as-is
             initial_data_to_forward = initial_data
             protocol = 'ssh_direct'
             sni = None  # No SNI for raw SSH
+            
+            # Check Dropbear availability
+            if not check_dropbear_available():
+                logger.error(f"Dropbear unavailable for raw SSH from {client_addr}")
+                client_sock.close()
+                return
 
-        # Now connect to Dropbear
+        # Now connect to Dropbear (double-check, but should be available)
         try:
             target_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             target_sock.settimeout(CONNECTION_TIMEOUT)
             target_sock.connect((TARGET_HOST, TARGET_PORT))
         except Exception as e:
             logger.error(f"Failed to connect to Dropbear at {TARGET_HOST}:{TARGET_PORT}: {e}")
+            # Send appropriate error based on protocol
+            if protocol == 'websocket':
+                close_frame = struct.pack('>BBH', 0x88, 0x02, 1013)
+                client_sock.send(close_frame)
+            elif protocol == 'http_proxy':
+                client_sock.send(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+            # For ssh_direct, just close
             client_sock.close()
             return
 
@@ -257,7 +264,6 @@ def handle_client(client_sock, client_addr):
                 return
 
         # Now bridge the two sockets bidirectionally using threads
-        # We'll create two threads: one for each direction
         def forward(src, dst, direction_name):
             """Forward data from src to dst until EOF or error"""
             try:
@@ -266,13 +272,12 @@ def handle_client(client_sock, client_addr):
                     if not data:
                         break
                     dst.send(data)
-            except (socket.error, ConnectionResetError, BrokenPipeError) as e:
+            except (socket.error, ConnectionResetError, BrokenPipeError):
                 # Normal closure
                 pass
             except Exception as e:
                 logger.debug(f"Bridge {direction_name} error: {e}")
             finally:
-                # Closing one end will eventually close the other
                 try:
                     src.shutdown(socket.SHUT_RD)
                 except:
@@ -295,7 +300,7 @@ def handle_client(client_sock, client_addr):
     except socket.timeout:
         logger.info(f"Client {client_addr} timeout")
     except Exception as e:
-        logger.error(f"Handler error for {client_addr}: {e}")
+        logger.error(f"Handler error for {client_addr}: {e}", exc_info=True)
     finally:
         try:
             client_sock.close()
@@ -313,13 +318,10 @@ def main():
     logger.info(f"Forwarding to Dropbear at {TARGET_HOST}:{TARGET_PORT}")
     logger.info("Detection modes: WebSocket | HTTP Proxy | Raw SSH")
     
-    # Thread pool: we'll spawn a new thread per connection (simple and effective)
-    # For production with high load, consider using concurrent.futures.ThreadPoolExecutor
     while True:
         try:
             client_sock, client_addr = server_sock.accept()
             logger.debug(f"New connection from {client_addr}")
-            # Spawn a handler thread
             handler_thread = threading.Thread(
                 target=handle_client,
                 args=(client_sock, client_addr),
