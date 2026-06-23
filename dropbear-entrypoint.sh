@@ -11,4 +11,4 @@ if [ ! -f /etc/dropbear/dropbear_ecdsa_host_key ]; then
     dropbearkey -t ecdsa -f /etc/dropbear/dropbear_ecdsa_host_key
 fi
 
-exec dropbear -F -E -p 22 -b /etc/dropbear/banner.txt -a
+exec dropbear -F -E -p 22 -a
