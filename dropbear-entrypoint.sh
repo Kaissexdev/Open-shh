@@ -10,5 +10,8 @@ fi
 if [ ! -f /etc/dropbear/dropbear_ecdsa_host_key ]; then
     dropbearkey -t ecdsa -f /etc/dropbear/dropbear_ecdsa_host_key
 fi
+if [ ! -f /etc/dropbear/dropbear_ed25519_host_key ]; then
+    dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key
+fi
 
 exec dropbear -F -E -p 22 -a
