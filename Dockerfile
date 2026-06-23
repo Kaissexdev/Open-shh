@@ -20,6 +20,9 @@ RUN mkdir -p /etc/dropbear && \
     touch /var/log/dropbear.log && \
     chmod 600 /var/log/dropbear.log
 
+# *** NEW: Set default root password ***
+RUN echo 'root:changeme' | chpasswd
+
 COPY dropbear-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/dropbear-entrypoint.sh
 
