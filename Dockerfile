@@ -1,70 +1,40 @@
-FROM ubuntu:22.04
+# syntax=docker/dockerfile:1
+FROM alpine:3.19
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=Asia/Kolkata
-ENV PORT=5000
+# Install required packages
+RUN apk add --no-cache \
+    dropbear \
+    openssl \
+    python3 \
+    py3-pip \
+    supervisor
 
-# Set a default password, can be overridden via environment variable
-ENV ROOT_PASSWORD=root123
+# Create a self-signed certificate for the target SNI host
+RUN mkdir -p /etc/tls && \
+    openssl req -x509 -newkey rsa:4096 -sha256 -days 36500 -nodes \
+        -keyout /etc/tls/privkey.pem \
+        -out /etc/tls/fullchain.pem \
+        -subj "/CN=applynow.hdfc.bank.in" \
+        -addext "subjectAltName = DNS:applynow.hdfc.bank.in"
 
-# Install tools, SSH, and a lightweight web server
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-      openssh-server \
-      wget curl git nano vim sudo htop \
-      net-tools iputils-ping software-properties-common \
-      python3 python3-pip \
-    && rm -rf /var/lib/apt/lists/*
+# Configure Dropbear SSH server
+RUN mkdir /etc/dropbear && \
+    touch /var/log/dropbear.log && \
+    chmod 600 /var/log/dropbear.log
+COPY dropbear-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/dropbear-entrypoint.sh
 
-# Setup SSH on port 22
-RUN echo "root:${ROOT_PASSWORD}" | chpasswd \
-    && mkdir -p /var/run/sshd \
-    && sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config \
-    && sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config \
-    && sed -i 's/#Port 22/Port 22/' /etc/ssh/sshd_config
+# Install a simple WebSocket‑to‑TCP proxy written in Python
+COPY ws_proxy.py /opt/ws_proxy.py
 
-# Create working directories
-RUN mkdir -p /workspace /data /logs /var/www/html
+# Supervisor configuration to run Dropbear, stunnel (TLS termination), and the ws_proxy
+COPY supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
-# Create a simple web server script on port 5000
-RUN echo '#!/usr/bin/env python3\n\
-import http.server\n\
-import socketserver\n\
-import os\n\
-\n\
-PORT = int(os.environ.get("PORT", 5000))\n\
-Handler = http.server.SimpleHTTPRequestHandler\n\
-\n\
-os.chdir("/var/www/html")\n\
-\n\
-with socketserver.TCPServer(("0.0.0.0", PORT), Handler) as httpd:\n\
-    print(f"Serving web interface at port {PORT}")\n\
-    print(f"SSH server running on port 22")\n\
-    print(f"Connect via: ssh root@open-shh.onrender.com -p 22")\n\
-    print(f"Password: root123 (change after login)")\n\
-    httpd.serve_forever()' > /usr/local/bin/web-server.py && chmod +x /usr/local/bin/web-server.py
+# Expose port 443 (TLS+WebSocket) and 22 (Dropbear directly, optional)
+EXPOSE 443 22
 
-# Create HTML page
-RUN echo '<!DOCTYPE html>\n\
-<html>\n\
-<head><title>VPS Server</title></head>\n\
-<body>\n\
-<h1>Welcome to Your VPS Server</h1>\n\
-<p>SSH Server is running on port 22</p>\n\
-<p>Connect using: <code>ssh root@open-shh.onrender.com -p 22</code></p>\n\
-<p>Default Password: <strong>root123</strong></p>\n\
-<p>Status: <strong>Online</strong></p>\n\
-</body>\n\
-</html>' > /var/www/html/index.html
+# Health check endpoint (plain HTTP on port 8081 for platform monitoring)
+EXPOSE 8081
 
-# Set hostname and bash prompt
-RUN echo "VPS-Server" > /etc/hostname
-RUN echo 'export PS1="root@VPS:\\w# "' >> /root/.bashrc && \
-    echo 'alias ll="ls -alF"' >> /root/.bashrc && \
-    echo 'alias la="ls -A"' >> /root/.bashrc && \
-    echo 'alias l="ls -CF"' >> /root/.bashrc
-
-EXPOSE 22 5000
-
-# Start SSH and web server
-CMD ["sh", "-c", "/usr/sbin/sshd && python3 /usr/local/bin/web-server.py"]
+# Entrypoint
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
